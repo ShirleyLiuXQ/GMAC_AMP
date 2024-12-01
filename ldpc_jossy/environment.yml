@@ -1,0 +1,21 @@
+name: BP_AMP
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - matplotlib
+  - numpy
+  - scipy
+  - pip
+  - python=3.9
+  - jupyter
+  - cvxpy
+  - tqdm
+  - mat73
+  - sympy
+  - tikzplotlib
+  # For testing/development
+  - flake8
+  - black
+  - pre-commit
+  - pytest

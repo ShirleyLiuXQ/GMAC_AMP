@@ -1,0 +1,3 @@
+[submodule "ldpc_jossy"]
+	path = ldpc_jossy
+	url = git@github.com:ShirleyLiuXQ/BP_AMP.git

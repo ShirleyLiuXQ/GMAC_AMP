@@ -1,0 +1,24 @@
+name: gmac_amp
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - matplotlib
+  - numpy
+  - scipy
+  - pip
+  - python=3.12
+  - jupyter
+  - cvxpy
+  - tqdm
+  - mat73
+  - sympy
+  - tikzplotlib
+  # For testing/development
+  - flake8
+  - black
+  - pre-commit
+  - pytest
+  - jax
+  - jaxlib
+  - numba
