@@ -56,7 +56,7 @@ class Denoiser_jax:
             # Choose mmse-marginal denoiser because
             # it is compatible with any d
             assert type == 'mmse-marginal' or type == 'mmse-marginal-thesis' \
-                or type == 'thres'
+                or 'thres' in type
         if self.type == 'mmse':
             # Initialise using Denoiser_jax(α, codebook, type='mmse')
             assert self.codebook is not None, "codebook must be provided."
@@ -77,7 +77,7 @@ class Denoiser_jax:
             assert self.bp_max_itcount is not None, \
                 "bp_max_itcount must be provided."
             assert self.codebook is None, "codebooks of LDPC codes must be None."
-        elif self.type == 'thres':
+        elif 'thres' in self.type:
             # Only works for RA without outer code.
             self.codebook = create_codebook(d=1) # uncoded
             assert self.ldpc_code is None, "ldpc_code cannot use thres denoiser."
@@ -105,9 +105,10 @@ class Denoiser_jax:
             # This functionis fully numpy, not jax.
             η, sum_dη, X_MAP = η_sum_dη_bp_xMAP_all_s(S, Σ_or_σ2, \
                 self.ldpc_code, self.bp_max_itcount, calc_sum_dη, calcMAP_estimate)
-        elif self.type == 'thres':
+        elif 'thres' in self.type:
             # Only works for RA without outer code.
-            η, sum_dη, X_MAP = η_thres_sum_dη_XMAP_all_s(S, Σ_or_σ2, self.α, calcMAP_estimate)
+            threshold = self.type.split('-')[1] if '-' in self.type else 'chi_squared'
+            η, sum_dη, X_MAP = η_thres_sum_dη_XMAP_all_s(S, Σ_or_σ2, self.α, calcMAP_estimate, threshold)
         else:
             raise NotImplementedError
         return η, sum_dη, X_MAP
@@ -404,40 +405,113 @@ def sum_dη_marginal_d1(s, σ2, α) -> np.array:
     return jnp.sum(dη) # sum over L rows to get a scalar
 
 def thres_RA(α, σ2):
-    """σ2 is avg noise variance per row of effective observation."""
+    """
+    α is %silent users, so opposite to our paper.
+    σ2 is avg noise variance per row of effective observation.
+    """
     E = 1
-    θ = jnp.sqrt(E)/2 - jnp.log(α/(1-α)) * σ2/jnp.sqrt(E)
+    θ = jnp.sqrt(E)/2 - jnp.log((1-α)/α) * σ2/jnp.sqrt(E)
     return θ
 
-def η_thres_xMAP(s, Σ, α, norm_s, calcMAP_estimate=False):
+def is_active_Gaussian(Y, σ2, α, E=1):
+    """
+    Check if the row of effective observation corresponds to an active user
+    by assuming the test statistic Y=sqrt(||s||_2^2/d) is Gaussian.
+
+    α is %silent users, so opposite to our paper.
+    σ2 is avg noise variance per row of effective observation.
+    """
+    θ = jnp.sqrt(E)/2 - jnp.log((1-α)/α) * σ2/jnp.sqrt(E)
+    return Y > θ
+
+def is_active_chi_squared(Y, σ2, d, α, E=1):
+    """
+    Check if the row of effective observation corresponds to an active user
+    by approximating the chi-squared test statistic Y=||s||_2^2/d using a Gaussian.
+
+    If the following inequality holds:
+    Y^2 - σ2*Y + (1/(2*E)) * (-σ2*E^2 - σ2*(σ2 + 2*E) * (4*σ2/d) * ln[α/(1-α) * sqrt((σ2 + 2*E)/σ2)]) > 0
+    then decide there is non-zero signal in the row of the effective observation.
+
+    Y : test statistic, row-wise average l2 norm ||s||_2^2/d, non-negative
+    σ2 : average noise variance per row of effective observation
+    α : %silent users, opposite to Overleaf
+
+    Returns:
+    bool : True if inequality holds, ie the row of effective observation corresponds to an active user.
+    """
+
+    # Input validation
+    if np.any(Y < 0):
+        raise ValueError("Y must be non-negative")
+    if σ2 < 0:
+        raise ValueError("σ2 must be positive")
+    if d <= 0:
+        raise ValueError("d must be positive")
+    if α < 0 or α > 1:
+        raise ValueError("α must be in the interval [0, 1]")
+    if E <= 0:
+        raise ValueError("E must be positive")
+
+    Yterm = Y**2 - σ2 * Y # can be a length-L vector
+
+    log_arg = α/(1 - α) * np.sqrt((σ2 + 2*E) / σ2) # scalar constant
+    if log_arg <= 0:
+        raise ValueError("Logarithm argument must be positive")
+    log_term = np.log(log_arg)
+
+    constant_part1 = -σ2 * E**2
+    constant_part2 = -σ2 * (σ2 + 2*E) * (4*σ2/d) * log_term
+    constant_term = (1/(2*E)) * (constant_part1 + constant_part2)
+
+    LHS = Yterm + constant_term
+    is_active = LHS > 0
+    # Check if inequality holds (> 0)
+    return is_active
+
+
+def η_thres_xMAP(s, Σ, α, norm_s, calcMAP_estimate=False, threshold = "chi_squared"):
     """
     The suboptimal thresholding denoiser for random access
     (defined in thesis, May 2024), considering the binary-CDMA scheme
     without outer code.
 
+    α is %silent users, so opposite to our paper.
     norm_s is l2-norm of s.
-    If the sqrt(norm_s^2/k)<θ, estimate s as all-zero.
-    Otherwise, apply the entrywise mmse denoiser (assuming α=1 for that row).
+    If the sqrt(norm_s^2/d)<θ, estimate s as all-zero.
+    Otherwise, apply the entrywise mmse denoiser (assuming α=0 for that row).
     """
     s = s.reshape(1,-1) # row vector
-    k = s.shape[1]
+    d = s.shape[1]
     if α == 0: # all active
-        θ = -jnp.inf # everything will be above this threshold
+        # θ = -jnp.inf # everything will be above this threshold
+        is_active = True
     elif α == 1: # all silent
-        θ = jnp.inf # everything will be below this threshold
+        # θ = jnp.inf # everything will be below this threshold
+        is_active = False
     else:
         σ2 = jnp.mean(jnp.diag(Σ)) # avg noise variance
-        θ = thres_RA(α, σ2)
-    if jnp.sqrt(norm_s**2/k) < θ:
+        # θ = thres_RA(α, σ2)
+        if threshold == "chi_squared":
+            Y = norm_s**2/d # test statistic
+            is_active = is_active_chi_squared(Y, σ2, d, α)
+        elif threshold == "gaussian":
+            Y = jnp.sqrt(norm_s**2/d) # test statistic
+            is_active = is_active_Gaussian(Y, σ2, α)
+        else:
+            raise ValueError("Unknown threshold type: {}".format(threshold))
+
+    # if jnp.sqrt(norm_s**2/d) < θ:
+    if not is_active:
         # return η(s) and xMAP estimate:
-        return jnp.zeros((1,k), dtype=np.float64), \
-            jnp.zeros((1,k), dtype=np.float64) if calcMAP_estimate else jnp.nan
+        return jnp.zeros((1,d), dtype=np.float64), \
+            jnp.zeros((1,d), dtype=np.float64) if calcMAP_estimate else jnp.nan
     else:
         # applies marginal-MMSE denoiser entrywise with α_marg = 0:
         α_marg = 0
         η, x_MAP = jax.vmap(η_marginal_mmse_xMAP, in_axes=(1, 0, None, None),
                     out_axes=0)(s, jnp.diag(Σ), α_marg, calcMAP_estimate)
-        return η.reshape(1,k), x_MAP.reshape(1,k) if calcMAP_estimate else jnp.nan
+        return η.reshape(1,d), x_MAP.reshape(1,d) if calcMAP_estimate else jnp.nan
 # η_thres_xMAP = jax.jit(η_thres_xMAP,
 #     static_argnames=['α', 'norm_s', 'calcMAP_estimate'])
 # I wasn't able to avoid tracing s above (as its norm is compared to threshold)
@@ -445,18 +519,20 @@ def η_thres_xMAP(s, Σ, α, norm_s, calcMAP_estimate=False):
 # η_thres_xMAP is only used for testing η_thres_xMAP_all_s.
 
 
-def η_thres(s, Σ, α, norm_s):
-    return η_thres_xMAP(s, Σ, α, norm_s, calcMAP_estimate=False)[0]
+def η_thres(s, Σ, α, norm_s, threshold="chi_squared"):
+    """α is %silent users, so opposite to our paper."""
+    return η_thres_xMAP(s, Σ, α, norm_s, calcMAP_estimate=False, threshold=threshold)[0]
 
-def η_thres_sum_dη_XMAP_all_s(S, Σ, α, calcMAP_estimate=False):
+def η_thres_sum_dη_XMAP_all_s(S, Σ, α, calcMAP_estimate=False, threshold="chi_squared"):
     """
+    α is %silent users.
     The suboptimal thresholding denoiser for random access
     (defined in thesis, May 2024), considering the binary-CDMA scheme
     without outer code.
 
     For each row s of S:
-    If the sqrt(norm_s^2/k)<θ, estimate s as all-zero.
-    Otherwise, apply the entrywise mmse denoiser (assuming α=1 for that row).
+    If the sqrt(norm_s^2/d)<θ, estimate s as all-zero.
+    Otherwise, apply the entrywise mmse denoiser (assuming α=0 for that row).
     """
     num_rows, d = S.shape
     Σ = Σ.reshape(d, d)
@@ -484,9 +560,18 @@ def η_thres_sum_dη_XMAP_all_s(S, Σ, α, calcMAP_estimate=False):
             norm_per_row = jnp.linalg.norm(S, axis=1)
             assert jnp.shape(norm_per_row) == (num_rows,)
             σ2 = jnp.mean(jnp.diag(Σ)) # avg noise variance
-            θ = thres_RA(α, σ2)
+            # θ = thres_RA(α, σ2)
+            if threshold == "chi_squared":
+                Y = norm_per_row**2/d
+                is_active = is_active_chi_squared(Y, σ2, d, α)
+            elif threshold == "gaussian":
+                Y = jnp.sqrt(norm_per_row**2/d)
+                is_active = is_active_Gaussian(Y, σ2, α)
+            else:
+                raise ValueError("Unknown threshold type: {}".format(threshold))
             # zeroton:
-            is_silent = jnp.sqrt(norm_per_row**2/d) < θ # jnp.minimum(2*jnp.sqrt(σ2), jnp.sqrt(E))
+            is_silent = jnp.logical_not(is_active) # boolean vector
+            # is_silent = jnp.sqrt(norm_per_row**2/d) < θ # jnp.minimum(2*jnp.sqrt(σ2), jnp.sqrt(E))
             # is_silent rows fill in zeros, others fill in η_marg
             η_all = jnp.where(is_silent.reshape(-1, 1), jnp.zeros_like(S), η_marg)
             X_MAP = jnp.where(is_silent.reshape(-1, 1), jnp.zeros_like(S), X_marg_MAP) \

@@ -52,7 +52,7 @@ class SE_jax:
         # Define a different denoiser to run SE:
         if denoiser.type == "mmse" or \
             denoiser.type == "ldpc-bp" or \
-            denoiser.type == "thres" or \
+            denoiser.type == "thres-chi_squared" or denoiser.type == "thres-gaussian" or \
             denoiser.type == "mmse-marginal-thesis":
             # mmse-marginal-thesis needs to store different entries
             # along the diagonal of the covariance matrix, whereas
@@ -70,7 +70,7 @@ class SE_jax:
         self.num_G_samples, self.num_X0_samples = num_G_samples, num_X0_samples
         self.use_allzero_X0 = use_allzero_X0
 
-    def run(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def run(self) -> Tuple[np.ndarray, np.ndarray, int, np.ndarray, np.ndarray]:
         logger.debug("Running SE jax")
         start_time = time.time()
         # Initialize arrays to store results:
@@ -79,15 +79,15 @@ class SE_jax:
         MSE_t = self.signal_power # dxd MSE matrix of last iteration
         mse_t_arr[0] = np.mean(np.diag(MSE_t))
         Tt = self.Σ_W + 1/self.δ * MSE_t # dxd effective noise cov matrix of last iteration
-        # Tt_arr = np.zeros((self.iter_max, self.d, self.d)) # across iterations
-        # Tt_arr[0] = Tt
+        Tt_arr = np.zeros((self.iter_max, self.d, self.d)) # across iterations
+        Tt_arr[0] = Tt
         for t in tqdm(range(1, self.iter_max)):
             MSE_t = MSE_mc(Tt, self.denoiser, self.log_file_name,
                 self.num_G_samples, self.num_X0_samples, self.use_allzero_X0)
 
             mse_t_arr[t] = np.mean(np.diag(MSE_t))
             Tt = self.Σ_W + 1/self.δ * MSE_t
-            # Tt_arr[t] = Tt
+            Tt_arr[t] = Tt
             # Monte Carlo is extremely computationally expensive, terminate early
             # according to scalar mse:
             if terminate(mse_t_arr, t, self.iter_max, MSE_RTOL):
@@ -96,7 +96,7 @@ class SE_jax:
                 break
         logger.debug(f"SE terminated after {t} iterations")
         logger.debug('Finished SE in %s hours', (time.time() - start_time)/3600)
-        return MSE_t, mse_t_arr, t, Tt  # Tt_arr
+        return MSE_t, mse_t_arr, t, Tt, Tt_arr
 
     def last_iter_mc(self, Tt_conv: np.array, last_iter_num_G_samples: int=None) \
         -> Tuple[np.array, np.array, np.array]:
@@ -158,7 +158,7 @@ class SE_SC_jax:
         # Define a different denoiser to run SE:
         if denoiser.type == "mmse" or \
             denoiser.type == "ldpc-bp" or \
-            denoiser.type == "thres" or \
+            denoiser.type == "thres-chi_squared" or denoiser.type == "thres-gaussian" or \
             denoiser.type == "mmse-marginal-thesis":
             self.d = d
         elif denoiser.type == "mmse-marginal":
@@ -204,13 +204,20 @@ class SE_SC_jax:
             # logger.debug("Updating mse_c")
             mse_c = self._update_mse_c(self.C, Psi_t)
             # logger.debug("Updating Phi, Phi_inv")
+            # if (np.any(np.isnan(Psi_t))):
+            #     Psi_t_contains_nan = True
+            #     logger.debug("Psi_t contains nan") # this shouldnt happen,
+            #     # but when it does, it's usually the number of MC samples is too low.
+            #     t = t-1 # avoid storing current iteration's results
+            # else:
+            #     Psi_t_contains_nan = False
             Phi_t, Phi_t_inv = self._update_Phi_Phi_inv(self.W, self.Σ_W, self.δ_in, Psi_t)
             # logger.debug("Updating mse")
             mse_t_arr[t] = mse_c
             Phi_t_arr[t] = Phi_t
             # logger.debug(f"Finished iteration {t} in {time.time() - time_start} seconds")
             avg_mse_t_arr = np.mean(mse_t_arr, axis=1) # avg across column blocks
-            if terminate(avg_mse_t_arr, t, self.iter_max, MSE_RTOL_SC):
+            if terminate(avg_mse_t_arr, t, self.iter_max, MSE_RTOL_SC): # or Psi_t_contains_nan:
                 # mse_t_arr = mse_t_arr[:t+1] # Pablo truncates the array
                 mse_t_arr[t+1 :, :] = -1 # mse_t_arr[t] # I fill in remaining entries with constant values
                 break
@@ -406,7 +413,7 @@ def MSE_mc(Tt_or_τt, denoiser: Denoiser_jax, log_file_name, \
                 assert codewords.shape == (2, 1)
                 num_X0_samples = codewords.shape[0]
             elif denoiser.type == 'mmse-marginal-thesis' or \
-                denoiser.type == 'thres':
+                'thres' in denoiser.type:
                 # Hack:
                 # codewords = create_codebook(d)
                 # num_X0_samples = codewords.shape[0]

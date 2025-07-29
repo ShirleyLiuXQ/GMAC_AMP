@@ -72,7 +72,7 @@ class AMP_jax:
         if Tt is None: # estimate Tt on the fly
             if self.denoiser.type == 'mmse' or \
                 self.denoiser.type == 'ldpc-bp' or \
-                self.denoiser.type == 'thres' or \
+                self.denoiser.type == 'thres-chi_squared' or self.denoiser.type == 'thres-gaussian' or \
                 self.denoiser.type == 'mmse-marginal-thesis':
                 Tt = np.cov(Zt, rowvar=False) # scalar when d=1
                 assert Tt.shape == (self.d, self.d) if self.d>1 else True
