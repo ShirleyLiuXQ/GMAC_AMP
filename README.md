@@ -2,9 +2,9 @@
 
 "This repository implements a CDMA-type coding scheme based on spatially coupled design matrices and approximate message passing (AMP) decoding, as proposed in the following papers:
 
-[1] X. Liu, P. Pascual Cobo, and R. Venkataramanan, "*Many-User Multiple Access with Random User Activity: Achievability Bounds and Efficient Schemes*," in submission, 2024.\
+[1] X. Liu, P. Pascual Cobo, and R. Venkataramanan, "*Many-User Multiple Access with Random User Activity: Achievability Bounds and Efficient Schemes*," in submission, 2025.\
 [2] X. Liu, P. Pascual Cobo, and R. Venkataramanan, "*Many-User Multiple Access with Random User Activity*," in Proc. IEEE Int. Symp. Inf. Theory, 2024.\
-[3] X. Liu, K. Hsieh, and R. Venkataramanan, "*Coded Many-User Multiple Access via Approximate Message Passing*," in submission, 2024.\
+[3] X. Liu, K. Hsieh, and R. Venkataramanan, "*Coded Many-User Multiple Access via Approximate Message Passing*," Information Theory, Probability and Statistical Learning: A Festschrift in Honor of Andrew Barron, 2025.\
 [4] X. Liu, K. Hsieh, and R. Venkataramanan, "*Coded Many-User Multiple Access via Approximate Message Passing*," in Proc. IEEE Int. Symp. Inf. Theory, 2024.
 
 ## Code overview
